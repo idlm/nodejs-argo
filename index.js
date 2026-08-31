@@ -75,6 +75,7 @@ function generateRandomName() {
 
 // 全局常量
 let subContent = null;
+let clashContent = null;
 let privateKey = '';
 let publicKey = '';
 const npmName = generateRandomName();
@@ -86,6 +87,7 @@ let phpPath = path.join(FILE_PATH, phpName);
 let webPath = path.join(FILE_PATH, webName);
 let botPath = path.join(FILE_PATH, botName);
 let subPath = path.join(FILE_PATH, 'sub.txt');
+let clashPath = path.join(FILE_PATH, 'clash.yaml');
 let listPath = path.join(FILE_PATH, 'list.txt');
 let bootLogPath = path.join(FILE_PATH, 'boot.log');
 let configPath = path.join(FILE_PATH, 'config.json');
@@ -693,6 +695,145 @@ async function getServerIP() {
   return serverIP;
 }
 
+function yamlQuote(value) {
+  return `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+function generateClashYaml(argoDomain, nodeName, SERVER_IP) {
+  const proxies = [];
+  const names = [];
+
+  const vlessName = `${nodeName}-VLESS`;
+  names.push(vlessName);
+  proxies.push(
+    `  - name: ${yamlQuote(vlessName)}\n` +
+    `    type: vless\n` +
+    `    server: ${CFIP}\n` +
+    `    port: ${CFPORT}\n` +
+    `    uuid: ${UUID}\n` +
+    `    network: ws\n` +
+    `    tls: true\n` +
+    `    udp: true\n` +
+    `    servername: ${argoDomain}\n` +
+    `    client-fingerprint: firefox\n` +
+    `    ws-opts:\n` +
+    `      path: /vless-argo?ed=2560\n` +
+    `      headers:\n` +
+    `        Host: ${argoDomain}`
+  );
+
+  const vmessName = `${nodeName}-VMess`;
+  names.push(vmessName);
+  proxies.push(
+    `  - name: ${yamlQuote(vmessName)}\n` +
+    `    type: vmess\n` +
+    `    server: ${CFIP}\n` +
+    `    port: ${CFPORT}\n` +
+    `    uuid: ${UUID}\n` +
+    `    alterId: 0\n` +
+    `    cipher: auto\n` +
+    `    network: ws\n` +
+    `    tls: true\n` +
+    `    udp: true\n` +
+    `    servername: ${argoDomain}\n` +
+    `    client-fingerprint: firefox\n` +
+    `    ws-opts:\n` +
+    `      path: /vmess-argo?ed=2560\n` +
+    `      headers:\n` +
+    `        Host: ${argoDomain}`
+  );
+
+  const trojanName = `${nodeName}-Trojan`;
+  names.push(trojanName);
+  proxies.push(
+    `  - name: ${yamlQuote(trojanName)}\n` +
+    `    type: trojan\n` +
+    `    server: ${CFIP}\n` +
+    `    port: ${CFPORT}\n` +
+    `    password: ${UUID}\n` +
+    `    network: ws\n` +
+    `    udp: true\n` +
+    `    sni: ${argoDomain}\n` +
+    `    client-fingerprint: firefox\n` +
+    `    ws-opts:\n` +
+    `      path: /trojan-argo?ed=2560\n` +
+    `      headers:\n` +
+    `        Host: ${argoDomain}`
+  );
+
+  if (isValidPort(HY2_PORT) && SERVER_IP) {
+    const hy2Name = `${nodeName}-Hysteria2`;
+    names.push(hy2Name);
+    proxies.push(
+      `  - name: ${yamlQuote(hy2Name)}\n` +
+      `    type: hysteria2\n` +
+      `    server: ${SERVER_IP}\n` +
+      `    port: ${HY2_PORT}\n` +
+      `    password: ${UUID}\n` +
+      `    sni: www.bing.com\n` +
+      `    skip-cert-verify: true\n` +
+      `    alpn:\n` +
+      `      - h3`
+    );
+  }
+
+  if (isValidPort(REALITY_PORT) && SERVER_IP && publicKey) {
+    const realityName = `${nodeName}-Reality`;
+    names.push(realityName);
+    proxies.push(
+      `  - name: ${yamlQuote(realityName)}\n` +
+      `    type: vless\n` +
+      `    server: ${SERVER_IP}\n` +
+      `    port: ${REALITY_PORT}\n` +
+      `    uuid: ${UUID}\n` +
+      `    network: tcp\n` +
+      `    tls: true\n` +
+      `    udp: true\n` +
+      `    flow: xtls-rprx-vision\n` +
+      `    servername: www.iij.ad.jp\n` +
+      `    client-fingerprint: firefox\n` +
+      `    reality-opts:\n` +
+      `      public-key: ${publicKey}`
+    );
+  }
+
+  if (isValidPort(S5_PORT) && SERVER_IP) {
+    const s5Name = `${nodeName}-Socks5`;
+    names.push(s5Name);
+    proxies.push(
+      `  - name: ${yamlQuote(s5Name)}\n` +
+      `    type: socks5\n` +
+      `    server: ${SERVER_IP}\n` +
+      `    port: ${S5_PORT}\n` +
+      `    username: ${UUID.substring(0, 8)}\n` +
+      `    password: ${UUID.slice(-12)}\n` +
+      `    udp: true`
+    );
+  }
+
+  const proxyList = names.map((n) => `      - ${yamlQuote(n)}`).join('\n');
+  return (
+    `mixed-port: 7890\n` +
+    `allow-lan: false\n` +
+    `mode: rule\n` +
+    `log-level: info\n` +
+    `ipv6: true\n` +
+    `\n` +
+    `proxies:\n` +
+    `${proxies.join('\n\n')}\n` +
+    `\n` +
+    `proxy-groups:\n` +
+    `  - name: PROXY\n` +
+    `    type: select\n` +
+    `    proxies:\n` +
+    `${proxyList}\n` +
+    `      - DIRECT\n` +
+    `\n` +
+    `rules:\n` +
+    `  - MATCH,PROXY\n`
+  );
+}
+
 // 生成 list 和 sub 信息
 async function generateLinks(argoDomain) {
   const ISP = await getMetaInfo();
@@ -734,6 +875,8 @@ trojan://${UUID}@${CFIP}:${CFPORT}?security=tls&sni=${argoDomain}&fp=firefox&typ
       console.log(Buffer.from(subTxt).toString('base64'));
       fs.writeFileSync(subPath, Buffer.from(subTxt).toString('base64'));
       fs.writeFileSync(listPath, subTxt, 'utf8');
+      clashContent = generateClashYaml(argoDomain, nodeName, SERVER_IP);
+      fs.writeFileSync(clashPath, clashContent, 'utf8');
       console.log(`${FILE_PATH}/sub.txt saved successfully`);
       // 将订阅内容保存到全局变量，供 http 服务器使用
       subContent = Buffer.from(subTxt).toString('base64');
@@ -918,6 +1061,24 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end('Subscription content not yet available, please try again later.');
+      }
+    }
+    return;
+  }
+
+  // Clash / Mihomo YAML 订阅
+  if (urlPath === '/sub2') {
+    if (clashContent) {
+      res.writeHead(200, { 'Content-Type': 'text/yaml; charset=utf-8' });
+      res.end(clashContent);
+    } else {
+      try {
+        const fileContent = fs.readFileSync(clashPath, 'utf-8');
+        res.writeHead(200, { 'Content-Type': 'text/yaml; charset=utf-8' });
+        res.end(fileContent);
+      } catch (err) {
+        res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Clash subscription not yet available, please try again later.');
       }
     }
     return;
