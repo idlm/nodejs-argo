@@ -32,8 +32,8 @@ const CHAT_ID = process.env.CHAT_ID || '';                  // Telegram chat_id 
 const BOT_TOKEN = process.env.BOT_TOKEN || '';              // Telegram bot_token 两个变量不全不推送节点到TG 
 const SHOW_LOG = !['false', 'disable', 'no'].includes((process.env.SHOW_LOG || 'true').toLowerCase()); // 是否显示日志输出，true/yes显示，false/disable/no屏蔽，默认显示
 const AUTO_RESTART = !['false', 'disable', 'no'].includes((process.env.AUTO_RESTART || 'true').toLowerCase()); // 固定隧道不通时自动拉起/重启容器
-const CHECK_INTERVAL = parseInt(process.env.CHECK_INTERVAL || '120', 10); // 隧道检测间隔，秒
-const FAIL_LIMIT = parseInt(process.env.FAIL_LIMIT || '3', 10); // 连续失败次数后退出进程，交给平台重启容器
+const CHECK_INTERVAL = parseInt(process.env.CHECK_INTERVAL || '300', 10); // 隧道检测间隔，秒（小规格默认 5 分钟）
+const FAIL_LIMIT = parseInt(process.env.FAIL_LIMIT || '5', 10); // 连续失败次数后退出进程，交给平台重启容器
 
 // 控制日志输出
 if (!SHOW_LOG) {
@@ -587,8 +587,8 @@ function startHealthMonitor() {
     return;
   }
 
-  const intervalSec = Number.isFinite(CHECK_INTERVAL) && CHECK_INTERVAL >= 30 ? CHECK_INTERVAL : 120;
-  const limit = Number.isFinite(FAIL_LIMIT) && FAIL_LIMIT > 0 ? FAIL_LIMIT : 3;
+  const intervalSec = Number.isFinite(CHECK_INTERVAL) && CHECK_INTERVAL >= 30 ? CHECK_INTERVAL : 300;
+  const limit = Number.isFinite(FAIL_LIMIT) && FAIL_LIMIT > 0 ? FAIL_LIMIT : 5;
   let fails = 0;
   alwaysLog(`tunnel health monitor started, interval ${intervalSec}s, fail limit ${limit}`);
 
