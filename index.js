@@ -31,6 +31,9 @@ const NAME = process.env.NAME || '';                        // 节点名称
 const CHAT_ID = process.env.CHAT_ID || '';                  // Telegram chat_id  两个变量不全不推送节点到TG 
 const BOT_TOKEN = process.env.BOT_TOKEN || '';              // Telegram bot_token 两个变量不全不推送节点到TG 
 const SHOW_LOG = !['false', 'disable', 'no'].includes((process.env.SHOW_LOG || 'true').toLowerCase()); // 是否显示日志输出，true/yes显示，false/disable/no屏蔽，默认显示
+const AUTO_RESTART = !['false', 'disable', 'no'].includes((process.env.AUTO_RESTART || 'true').toLowerCase()); // 固定隧道不通时自动拉起/重启容器
+const CHECK_INTERVAL = parseInt(process.env.CHECK_INTERVAL || '120', 10); // 隧道检测间隔，秒
+const FAIL_LIMIT = parseInt(process.env.FAIL_LIMIT || '3', 10); // 连续失败次数后退出进程，交给平台重启容器
 
 // 控制日志输出
 if (!SHOW_LOG) {
@@ -507,25 +510,110 @@ uuid: ${UUID}`;
 
   // 运行cloud-fared
   if (fs.existsSync(botPath)) {
-    let args;
-
-    if (ARGO_AUTH.match(/^[A-Z0-9a-z=]{120,250}$/)) {
-      args = `tunnel --edge-ip-version auto --no-autoupdate --protocol http2 run --token ${ARGO_AUTH}`;
-    } else if (ARGO_AUTH.match(/TunnelSecret/)) {
-      args = `tunnel --edge-ip-version auto --config ${FILE_PATH}/tunnel.yml run`;
-    } else {
-      args = `tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile ${FILE_PATH}/boot.log --loglevel info --url http://localhost:${ARGO_PORT}`;
-    }
-
     try {
-      await exec(`nohup ${botPath} ${args} >/dev/null 2>&1 &`);
-      console.log(`${botName} is running`);
+      await startCloudflared();
       await new Promise((resolve) => setTimeout(resolve, 2000));
     } catch (error) {
       console.error(`Error executing command: ${error}`);
     }
   }
   await new Promise((resolve) => setTimeout(resolve, 5000));
+}
+
+function getArgoArgs() {
+  if (ARGO_AUTH && ARGO_AUTH.match(/^[A-Z0-9a-z=]{120,250}$/)) {
+    return `tunnel --edge-ip-version auto --no-autoupdate --protocol http2 run --token ${ARGO_AUTH}`;
+  }
+  if (ARGO_AUTH && ARGO_AUTH.match(/TunnelSecret/)) {
+    return `tunnel --edge-ip-version auto --config ${FILE_PATH}/tunnel.yml run`;
+  }
+  return `tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile ${FILE_PATH}/boot.log --loglevel info --url http://localhost:${ARGO_PORT}`;
+}
+
+async function killProcessByName(name) {
+  try {
+    if (process.platform === 'win32') {
+      await exec(`taskkill /f /im ${name}.exe > nul 2>&1`);
+    } else {
+      await exec(`pkill -f "[${name.charAt(0)}]${name.substring(1)}" > /dev/null 2>&1`);
+    }
+  } catch (error) {
+    // 进程不存在时 pkill 会非 0，忽略
+  }
+}
+
+async function startCloudflared() {
+  if (!fs.existsSync(botPath)) {
+    console.log('cloudflared binary missing, skip start');
+    return false;
+  }
+  const args = getArgoArgs();
+  await exec(`nohup ${botPath} ${args} >/dev/null 2>&1 &`);
+  console.log(`${botName} is running`);
+  return true;
+}
+
+async function checkArgoHealth() {
+  if (!ARGO_DOMAIN) return true;
+  const url = `https://${ARGO_DOMAIN}/${SUB_PATH}`;
+  try {
+    const res = await axios.get(url, {
+      timeout: 15000,
+      validateStatus: () => true,
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      responseType: 'text'
+    });
+    const body = typeof res.data === 'string' ? res.data : '';
+    if (res.status === 530 || /error code:\s*1033/i.test(body) || /Cloudflare Tunnel error/i.test(body)) {
+      return false;
+    }
+    if (res.status === 502 || res.status === 503 || res.status === 504) {
+      return false;
+    }
+    return res.status >= 200 && res.status < 400;
+  } catch (error) {
+    console.log(`argo health check error: ${error.message}`);
+    return false;
+  }
+}
+
+function startHealthMonitor() {
+  if (!AUTO_RESTART) {
+    console.log('AUTO_RESTART disabled');
+    return;
+  }
+  if (!ARGO_DOMAIN) {
+    console.log('ARGO_DOMAIN empty, skip tunnel health monitor');
+    return;
+  }
+
+  const intervalSec = Number.isFinite(CHECK_INTERVAL) && CHECK_INTERVAL >= 30 ? CHECK_INTERVAL : 120;
+  const limit = Number.isFinite(FAIL_LIMIT) && FAIL_LIMIT > 0 ? FAIL_LIMIT : 3;
+  let fails = 0;
+  alwaysLog(`tunnel health monitor started, interval ${intervalSec}s, fail limit ${limit}`);
+
+  const tick = async () => {
+    const ok = await checkArgoHealth();
+    if (ok) {
+      if (fails > 0) console.log('argo tunnel recovered');
+      fails = 0;
+      return;
+    }
+    fails += 1;
+    alwaysLog(`argo tunnel unhealthy (${fails}/${limit}), restarting cloudflared`);
+    await killProcessByName(botName);
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await startCloudflared();
+    if (fails >= limit) {
+      alwaysLog('argo tunnel still down, exiting so the platform restarts the container');
+      process.exit(1);
+    }
+  };
+
+  setTimeout(() => {
+    tick();
+    setInterval(tick, intervalSec * 1000);
+  }, 180000);
 }
 
 // 根据系统架构返回对应的url
@@ -944,7 +1032,7 @@ async function uploadNodes() {
 // 90s后删除相关文件
 function cleanFiles() {
   setTimeout(() => {
-    const filesToDelete = [bootLogPath, configPath, webPath, botPath, listPath, certPath, keyPath];
+    const filesToDelete = [bootLogPath, configPath, listPath, certPath, keyPath];
 
     if (NEZHA_PORT) {
       filesToDelete.push(npmPath);
@@ -1036,6 +1124,7 @@ async function startserver() {
     await extractDomains();
     await sendTelegram();
     await AddVisitTask();
+    startHealthMonitor();
   } catch (error) {
     console.error('Error in startserver:', error);
   }
